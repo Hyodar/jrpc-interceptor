@@ -1,71 +1,81 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
+	"io/ioutil"
 	"log"
-
-	syslog "gopkg.in/mcuadros/go-syslog.v2"
+	"net"
+	"net/http"
+	"strconv"
 )
 
 var (
-	debug   bool
+	debug         bool
+	listenSyslog  string
+	listenHTTP    string
+	usePrometheus bool
 )
 
-func receiveSyslog(ch syslog.LogPartsChannel) {
-	var (
-		l       *logEntry
-		err     error
-	)
-
-	for msg := range ch {
-		if debug {
-			log.Printf("%s: %s", msg["hostname"], msg["content"])
-		}
-
-		if l, err = parseSyslogMessage(msg); err != nil {
-			log.Printf("Unable to parse message: %s", err)
-			continue
-		}
-
-		if l.jrpc_method != "" {
-			l.uri = l.jrpc_method
-		} else {
-			l.jrpc_method = ""
-			l.uri = "/"
-		}
-
-		prometheusMetricsRegister(l)
-	}
+type JSONRPCRequest struct {
+	JSONRPC string      `json:"jsonrpc"`
+	Method  string      `json:"method"`
+	Params  interface{} `json:"params"`
+	ID      interface{} `json:"id"`
 }
 
 func main() {
-	var (
-		listenSyslog   string
-		listenHTTP     string
-		usePrometheus bool
-	)
-
 	flag.StringVar(&listenSyslog, "listenSyslog", "0.0.0.0:514", "ip:port to listen for syslog messages")
 	flag.StringVar(&listenHTTP, "listenHTTP", "0.0.0.0:9100", "ip:port to listen for http requests")
 	flag.BoolVar(&usePrometheus, "usePrometheus", true, "Enable posting metrics to Prometheus")
 	flag.BoolVar(&debug, "debug", false, "Enable debug")
 	flag.Parse()
 
-	channel := make(syslog.LogPartsChannel)
-	handler := syslog.NewChannelHandler(channel)
-
-	log.Printf("Starting Syslog UDP listener: %s", listenSyslog)
-	server := syslog.NewServer()
-	server.SetFormat(syslog.RFC3164)
-	server.SetHandler(handler)
-	server.ListenUDP(listenSyslog)
-	server.Boot()
-
-	go receiveSyslog(channel)
-
 	if usePrometheus {
-		log.Printf("Starting Prometheus HTTP listener: %s", listenHTTP)
 		go prometheusListener(listenHTTP)
 	}
-	server.Wait()
+
+	http.HandleFunc("/", handleRequest)
+	log.Fatal(http.ListenAndServe(":8080", nil))
+}
+
+func handleRequest(w http.ResponseWriter, r *http.Request) {
+	body, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		log.Printf("Error reading body: %v", err)
+		http.Error(w, "can't read body", http.StatusBadRequest)
+		return
+	}
+
+	var jrpcRequest JSONRPCRequest
+	err = json.Unmarshal(body, &jrpcRequest)
+	if err != nil {
+		log.Printf("Error parsing JSON-RPC request: %v", err)
+	}
+
+	requestTime, _ := strconv.ParseFloat(r.Header.Get("X-Request-Time"), 64)
+	responseTime, _ := strconv.ParseFloat(r.Header.Get("X-Response-Time"), 64)
+	requestLength, _ := strconv.ParseInt(r.Header.Get("X-Request-Length"), 10, 64)
+	bytesSent, _ := strconv.ParseInt(r.Header.Get("X-Bytes-Sent"), 10, 64)
+
+	l := &logEntry{
+		clientIP:          net.ParseIP(r.Header.Get("X-Real-IP")),
+		method:            r.Method,
+		uri:               r.URL.Path,
+		scheme:            r.URL.Scheme,
+		status:            r.Header.Get("X-Status"),
+		duration:          requestTime,
+		response_duration: responseTime,
+		jrpc_method:       jrpcRequest.Method,
+		bytesReceived:     uint64(requestLength),
+		bytesSent:         uint64(bytesSent),
+	}
+
+	prometheusMetricsRegister(l)
+
+	if debug {
+		log.Printf("Processed request: %+v", l)
+	}
+
+	w.WriteHeader(http.StatusOK)
 }
