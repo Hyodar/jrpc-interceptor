@@ -5,7 +5,6 @@ upstream eth-client {
 server {
     listen ${LISTEN_PORT};
 
-    access_log syslog:server=${LOG_SERVER_URL},tag=nginx,severity=info;
     access_log /var/log/nginx/access.log;
 
     location / {
