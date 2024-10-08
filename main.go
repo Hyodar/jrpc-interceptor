@@ -12,7 +12,7 @@ import (
 
 var (
 	debug         bool
-	listenSyslog  string
+	listen        string
 	listenHTTP    string
 	usePrometheus bool
 )
@@ -25,8 +25,8 @@ type JSONRPCRequest struct {
 }
 
 func main() {
-	flag.StringVar(&listenSyslog, "listenSyslog", "0.0.0.0:514", "ip:port to listen for syslog messages")
-	flag.StringVar(&listenHTTP, "listenHTTP", "0.0.0.0:9100", "ip:port to listen for http requests")
+	flag.StringVar(&listen, "listen", "127.0.0.1:9200", "ip:port to listen for mirrored messages")
+	flag.StringVar(&listenHTTP, "listenHTTP", "0.0.0.0:9201", "ip:port to listen for http requests")
 	flag.BoolVar(&usePrometheus, "usePrometheus", true, "Enable posting metrics to Prometheus")
 	flag.BoolVar(&debug, "debug", false, "Enable debug")
 	flag.Parse()
@@ -36,7 +36,7 @@ func main() {
 	}
 
 	http.HandleFunc("/", handleRequest)
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	log.Fatal(http.ListenAndServe(listen, nil))
 }
 
 func handleRequest(w http.ResponseWriter, r *http.Request) {
